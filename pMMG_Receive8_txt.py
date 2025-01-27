@@ -1,108 +1,347 @@
+import sys
 import serial
 import serial.tools.list_ports
-import matplotlib.pyplot as plt
-import pandas as pd
+import time
 
-# Use LaTeX font 
-# plt.rc('text', usetex=True)
-plt.rc('font', family='serif')
+import numpy as np
 
-for port in serial.tools.list_ports.comports():
-    if "STMicroelectronics" in port.manufacturer:
-        com_port = port.device
-serialPort = serial.Serial(com_port, 921600, timeout=1)
+from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
+                             QHBoxLayout, QPushButton, QLabel, QCheckBox,
+                             QLineEdit, QMessageBox, QGroupBox, QFormLayout)
+from PyQt5.QtGui import QIcon
 
-# 텍스트 파일 열기 (기록할 파일 경로)
-txt_filename = 'dataFile8.txt'
+# PyQtGraph
+import pyqtgraph as pg
 
-# 전체 코드
-with open(txt_filename, mode='w') as file:  # 'w' 모드로 텍스트 파일 열기
-    file.write("Time[ms],  Pressure1[kPa],  Pressure2[kPa],  Pressure3[kPa],  Pressure4[kPa],  Pressure5[kPa],  Pressure6[kPa],  Pressure7[kPa],  Pressure8[kPa],  FSR_L,  FSR_R\n")  # 한 줄에 time과 pressure 기록
-    try:
-        while True:
-            # 시리얼 버퍼에 데이터가 있으면 읽기 시작
-            if serialPort.in_waiting > 0:
-                temp = serialPort.readline().decode('utf-8').strip()  # 시리얼 데이터 읽기
-                temp = temp.replace('\0', '')  # Null 부분 삭제 
-                print(f"Received line: {temp}")  # 디버그 용도
+####################################################
+PROGRAM_VERSION = "1.01"
+# 1.00   Initial release
+# 1.01   GUI-based software, Real-time plot
+####################################################
 
-                # 빈 데이터가 아닌 경우만 처리
-                if temp:
-                    try:
-                        # 데이터를 ','로 분리
-                        data = temp.split(',')
-                        
-                        # 데이터가 올바르게 들어왔는지 확인
-                        if len(data) >= 11:
-                            # 'Time: '와 'Pressure: '를 분리하여 각각의 값 추출
-                            time_data = float(data[0].strip())
-                            pressure1_data = float(data[1].strip())
-                            pressure2_data = float(data[2].strip())
-                            pressure3_data = float(data[3].strip())
-                            pressure4_data = float(data[4].strip())
-                            pressure5_data = float(data[5].strip())
-                            pressure6_data = float(data[6].strip())
-                            pressure7_data = float(data[7].strip())
-                            pressure8_data = float(data[8].strip())
-                            FSR_L_data = float(data[9].strip())
-                            FSR_R_data = float(data[10].strip())
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(f"pMMG Receiver v{PROGRAM_VERSION}")
+        self.resize(1200, 700)
 
-                            # 텍스트 파일에 데이터 쓰기
-                            file.write(f"{time_data}, {' ' * (14 - len(str(time_data)) - 2)}{pressure1_data}," 
-                                        f"{' ' * (20 - len(str(pressure1_data)) - 2)}{pressure2_data},"
-                                        f"{' ' * (20 - len(str(pressure2_data)) - 2)}{pressure3_data},"
-                                        f"{' ' * (20 - len(str(pressure3_data)) - 2)}{pressure4_data},"
-                                        f"{' ' * (20 - len(str(pressure4_data)) - 2)}{pressure5_data},"
-                                        f"{' ' * (20 - len(str(pressure5_data)) - 2)}{pressure6_data},"
-                                        f"{' ' * (20 - len(str(pressure6_data)) - 2)}{pressure7_data},"
-                                        f"{' ' * (20 - len(str(pressure7_data)) - 2)}{pressure8_data},"
-                                        f"{' ' * (20 - len(str(pressure8_data)) - 2)}{FSR_L_data},"
-                                        f"{' ' * (14 - len(str(FSR_L_data)) - 2)}{FSR_R_data}\n")  # 한 줄에 time과 pressure 기록
-                            
-                        else:
-                            print("Wrong data is received:", temp)
-                    except IndexError:
-                        print(f"IndexError: This data cannot be read. Received Data: {temp}")
-                    except ValueError:
-                        print(f"ValueError: This data cannot be converted. Received Data: {temp}")
-                else:
-                    print("Error: Received Empty data")
+        # ----------- PyQtGraph 전역옵션 (최적화) -----------
+        pg.setConfigOptions(
+            antialias=False,       # 안티에일리싱 끔 (속도↑)
+            useOpenGL=True,        # OpenGL 가속
+            foreground='k',        # 그래프 라벨 색상 (검정)
+            background='w'         # 배경 흰색
+        )
 
-    except KeyboardInterrupt:
-        print("Exit the program. Close the text file")
-    
-    except serial.SerialException as e:
-        print(f"SerialException: {e}")
-    
-    finally:
-        # 시리얼 포트와 파일 닫기
-        serialPort.close()
-        file.close()
+        # 시리얼 및 데이터 관련 초기화
+        self.serial_port = None
+        self.is_reading = False  # 데이터 수신 중인지 여부
+        self.rx_buffer = ""      # 수신된 문자열을 누적할 버퍼
+        self.max_time_ms = 10000 # 그래프에 표시할 최대 시간(10초)
 
+        # 실시간 버퍼(리스트) - 10초 이상은 trimData()로 제거
+        self.data_buffer = {
+            'Time': [],
+            'Pressure1': [],
+            'Pressure2': [],
+            'Pressure3': [],
+            'Pressure4': [],
+            'Pressure5': [],
+            'Pressure6': [],
+            'Pressure7': [],
+            'Pressure8': [],
+            'FSR_L': [],
+            'FSR_R': []
+        }
 
+        # GUI 초기화
+        self._initUI()
 
+        # 시리얼 포트 연결 시도
+        self._connectSerial()
 
+        # 그래프 갱신용 타이머 (50ms)
+        self.plot_timer = QTimer(self)
+        self.plot_timer.setInterval(50)
+        self.plot_timer.timeout.connect(self.update_plot)
+        self.plot_timer.start()
 
-# Plot the graph after data saving
-data = pd.read_csv(txt_filename, header=0, names=['Time[ms]', 'Pressure1[kPa]', 'Pressure2[kPa]', 'Pressure3[kPa]', 'Pressure4[kPa]', 'Pressure5[kPa]', 'Pressure6[kPa]', 'Pressure7[kPa]', 'Pressure8[kPa]', 'FSR_L', 'FSR_R'], delimiter=r',\s*', engine='python')
+        # 시리얼 읽기용 타이머 (5ms)
+        self.read_timer = QTimer(self)
+        self.read_timer.setInterval(5)
+        self.read_timer.timeout.connect(self.read_data)
 
-plt.figure(figsize=(10,6))
-plt.plot(data['Time[ms]'], data['Pressure1[kPa]'], label='pMMG1', color='b')
-plt.plot(data['Time[ms]'], data['Pressure2[kPa]'], label='pMMG2', color='orange')
-plt.plot(data['Time[ms]'], data['Pressure3[kPa]'], label='pMMG3', color='yellow')
-plt.plot(data['Time[ms]'], data['Pressure4[kPa]'], label='pMMG4', color='g')
-plt.plot(data['Time[ms]'], data['Pressure5[kPa]'], label='pMMG5', color='b')
-plt.plot(data['Time[ms]'], data['Pressure6[kPa]'], label='pMMG6', color='indigo')
-plt.plot(data['Time[ms]'], data['Pressure7[kPa]'], label='pMMG7', color='violet')
-plt.plot(data['Time[ms]'], data['Pressure8[kPa]'], label='pMMG8', color='brown')
-plt.plot(data['Time[ms]'], data['FSR_L'], label='FSR_L', color='lightblue')
-plt.plot(data['Time[ms]'], data['FSR_R'], label='FSR_R', color='lime')
-plt.xlabel('Time[ms]', fontsize=15)
-plt.ylabel('Pressure[kPa]', fontsize=15)
-plt.title('Result of Experiment', fontsize=25)
-plt.grid(alpha=0.4)
-plt.legend(loc=1, fontsize=15)
-plt.savefig('pMMG_result8.png')  
-plt.show()
+    def _initUI(self):
+        """GUI를 초기화하는 함수"""
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
 
+        main_layout = QHBoxLayout(central_widget)
 
+        # ----------- (좌) PyQtGraph Plot 영역 ------------
+        self.plot_widget = pg.PlotWidget()
+        self.plot_widget.setLabel('left', 'Pressure / FSR')
+        self.plot_widget.setLabel('bottom', 'Time [ms]')
+        self.plot_widget.setTitle('Real-Time Plot')
+        self.plot_widget.addLegend()  # 범례
+        self.plot_widget.showGrid(x=True, y=True, alpha=0.4)
+        main_layout.addWidget(self.plot_widget, stretch=7)
+
+        # 커브(곡선)들 저장할 딕셔너리
+        self.curves = {}
+
+        # 데이터 이름/색상/범례표기
+        self.plot_config = {
+            'Pressure1': ('pMMG1', 'b'),
+            'Pressure2': ('pMMG2', 'orange'),
+            'Pressure3': ('pMMG3', 'yellow'),
+            'Pressure4': ('pMMG4', 'g'),
+            'Pressure5': ('pMMG5', 'blue'),
+            'Pressure6': ('pMMG6', 'indigo'),
+            'Pressure7': ('pMMG7', 'violet'),
+            'Pressure8': ('pMMG8', 'brown'),
+            'FSR_L'    : ('FSR_L', 'lightblue'),
+            'FSR_R'    : ('FSR_R', 'lime'),
+        }
+
+        # PlotItem에 커브 생성 (초기에 빈 데이터)
+        for key, (label, color) in self.plot_config.items():
+            pen = pg.mkPen(color=color, width=1)
+            curve = self.plot_widget.plot(name=label, pen=pen)
+            curve.setData([], [])
+            self.curves[key] = curve
+
+        # ----------- (우) 설정/버튼 영역 ------------
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setSpacing(20)
+        main_layout.addWidget(right_widget, stretch=3)
+
+        # (1) 체크박스 구역
+        checkbox_group = QGroupBox("Select Data to Plot")
+        form_chk_layout = QFormLayout(checkbox_group)
+        self.checkbox_list = {}
+
+        for key, (label_text, _) in self.plot_config.items():
+            cb = QCheckBox(label_text)
+            cb.setChecked(True)  # 초기에는 전부 표시
+            self.checkbox_list[key] = cb
+            form_chk_layout.addRow(cb)
+
+        right_layout.addWidget(checkbox_group)
+
+        # (2) 파일명 입력 구역
+        file_group = QGroupBox("Output File Name")
+        file_layout = QVBoxLayout(file_group)
+        self.file_edit = QLineEdit()
+        self.file_edit.setText("dataFile8.txt")  # 기본값
+        file_layout.addWidget(self.file_edit)
+        right_layout.addWidget(file_group)
+
+        # (3) 상태 표시 + 버튼 구역
+        self.label_state = QLabel("Not connected")
+        self.label_state.setStyleSheet("font-weight: bold; color: red;")
+
+        self.btn_start = QPushButton("Start Reading")
+        self.btn_start.clicked.connect(self.toggle_reading)
+
+        right_layout.addWidget(self.label_state, alignment=Qt.AlignCenter)
+        right_layout.addWidget(self.btn_start)
+
+    def _connectSerial(self):
+        """STMicroelectronics로 표시되는 COM 포트를 자동 검색 후 연결 시도"""
+        ports = serial.tools.list_ports.comports()
+        stm_port = None
+        for port in ports:
+            # 제조사 이름에 'STMicroelectronics'가 있으면 사용
+            if port.manufacturer and "STMicroelectronics" in port.manufacturer:
+                stm_port = port.device
+                break
+
+        if stm_port:
+            try:
+                # 921600 baud로 연결
+                self.serial_port = serial.Serial(stm_port, 921600, timeout=0.1)
+                self.label_state.setText("Connected")
+                self.label_state.setStyleSheet("font-weight: bold; color: green;")
+            except serial.SerialException as e:
+                QMessageBox.critical(self, "Serial Error", str(e))
+                self.serial_port = None
+                self.label_state.setText("Not connected")
+                self.label_state.setStyleSheet("font-weight: bold; color: red;")
+        else:
+            self.serial_port = None
+            self.label_state.setText("Not connected")
+            self.label_state.setStyleSheet("font-weight: bold; color: red;")
+
+    def toggle_reading(self):
+        """Start/Stop Reading 버튼 클릭 시 동작"""
+        if not self.serial_port:
+            QMessageBox.warning(self, "Warning", "Serial port not connected!")
+            return
+
+        if not self.is_reading:
+            # 파일 열기 시도
+            self.txt_filename = self.file_edit.text().strip()
+            if not self.txt_filename:
+                QMessageBox.warning(self, "Warning", "파일명을 입력하세요.")
+                return
+
+            # 파일 열기 (쓰기 모드)
+            try:
+                self.file_obj = open(self.txt_filename, mode='w', encoding='utf-8')
+                header = ("Time[ms],Pressure1[kPa],Pressure2[kPa],Pressure3[kPa],"
+                          "Pressure4[kPa],Pressure5[kPa],Pressure6[kPa],Pressure7[kPa],"
+                          "Pressure8[kPa],FSR_L,FSR_R\n")
+                self.file_obj.write(header)
+            except Exception as e:
+                QMessageBox.critical(self, "File Error", str(e))
+                return
+
+            # 수신 시작
+            self.is_reading = True
+            self.label_state.setText("Reading")
+            self.label_state.setStyleSheet("font-weight: bold; color: blue;")
+            self.btn_start.setText("Stop Reading")
+
+            # 시리얼 리드용 타이머 시작
+            self.read_timer.start()
+
+        else:
+            # 수신 정지
+            self.is_reading = False
+            self.label_state.setText("Connected")
+            self.label_state.setStyleSheet("font-weight: bold; color: green;")
+            self.btn_start.setText("Start Reading")
+
+            # 파일 닫기
+            if hasattr(self, 'file_obj'):
+                self.file_obj.close()
+
+            # 리드 타이머 중단
+            self.read_timer.stop()
+
+    def read_data(self):
+        """시리얼 버퍼에 있는 모든 데이터 읽어온 뒤 줄 단위로 파싱"""
+        if not self.serial_port or not self.is_reading:
+            return
+
+        # 한 번에 버퍼 모두 읽기
+        data_bytes = self.serial_port.read_all()
+        if not data_bytes:
+            return
+
+        # 이전에 파싱 못한 찌꺼기(self.rx_buffer)에 이어붙임
+        self.rx_buffer += data_bytes.decode('utf-8', errors='ignore')
+
+        # 줄 단위로 분할
+        lines = self.rx_buffer.split('\n')
+        # 마지막 줄은 개행 문자가 없을 수 있으므로 버퍼에 보존
+        self.rx_buffer = lines.pop(-1)
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            data_list = line.split(',')
+            if len(data_list) >= 11:
+                try:
+                    # float 변환
+                    time_val   = float(data_list[0].strip())
+                    p1_val     = float(data_list[1].strip())
+                    p2_val     = float(data_list[2].strip())
+                    p3_val     = float(data_list[3].strip())
+                    p4_val     = float(data_list[4].strip())
+                    p5_val     = float(data_list[5].strip())
+                    p6_val     = float(data_list[6].strip())
+                    p7_val     = float(data_list[7].strip())
+                    p8_val     = float(data_list[8].strip())
+                    fsr_l_val  = float(data_list[9].strip())
+                    fsr_r_val  = float(data_list[10].strip())
+
+                    # 버퍼에 저장
+                    self.data_buffer['Time'].append(time_val)
+                    self.data_buffer['Pressure1'].append(p1_val)
+                    self.data_buffer['Pressure2'].append(p2_val)
+                    self.data_buffer['Pressure3'].append(p3_val)
+                    self.data_buffer['Pressure4'].append(p4_val)
+                    self.data_buffer['Pressure5'].append(p5_val)
+                    self.data_buffer['Pressure6'].append(p6_val)
+                    self.data_buffer['Pressure7'].append(p7_val)
+                    self.data_buffer['Pressure8'].append(p8_val)
+                    self.data_buffer['FSR_L'].append(fsr_l_val)
+                    self.data_buffer['FSR_R'].append(fsr_r_val)
+
+                    # 파일에 저장
+                    if hasattr(self, 'file_obj'):
+                        save_str = (f"{time_val},{p1_val},{p2_val},{p3_val},"
+                                    f"{p4_val},{p5_val},{p6_val},{p7_val},"
+                                    f"{p8_val},{fsr_l_val},{fsr_r_val}\n")
+                        self.file_obj.write(save_str)
+
+                    # 10초 범위를 넘으면 앞부분 제거
+                    self._trimData(time_val)
+
+                except ValueError:
+                    # 데이터 중간에 이상값 있으면 스킵
+                    print(f"Value Error in parsing line: {line}")
+            else:
+                print(f"Incomplete data: {line}")
+
+    def _trimData(self, current_time_ms):
+        """현재 시간이 10초(10000ms)를 넘으면 앞부분 데이터를 버림"""
+        threshold = current_time_ms - self.max_time_ms
+        if threshold < 0:
+            return
+
+        # Time 리스트 기준으로 잘라낼 인덱스 계산
+        time_list = self.data_buffer['Time']
+        keep_index = 0
+        for i, t in enumerate(time_list):
+            if t >= threshold:
+                keep_index = i
+                break
+
+        if keep_index > 0:
+            for key in self.data_buffer:
+                self.data_buffer[key] = self.data_buffer[key][keep_index:]
+
+    def update_plot(self):
+        """30ms마다 그래프 갱신"""
+        if not self.data_buffer['Time']:
+            return
+
+        time_vals = np.array(self.data_buffer['Time'], dtype=float)
+
+        # X축 범위 설정 (10초)
+        x_min = max(0, time_vals[-1] - self.max_time_ms)
+        x_max = max(time_vals[-1], 10)
+        self.plot_widget.setXRange(x_min, x_max, padding=0)
+
+        # 체크박스 상태에 따라 곡선 업데이트
+        for key in self.curves:
+            if self.checkbox_list[key].isChecked():
+                y_vals = np.array(self.data_buffer[key], dtype=float)
+                # downsample 파라미터는 필요 시 조절 (예: downsample=5 등)
+                self.curves[key].setData(time_vals, y_vals,
+                                         skipFiniteCheck=True)
+            else:
+                self.curves[key].setData([], [])
+
+    def closeEvent(self, event):
+        """윈도우 종료 시 자원 정리"""
+        if self.serial_port and self.serial_port.is_open:
+            self.serial_port.close()
+        if hasattr(self, 'file_obj') and not self.file_obj.closed:
+            self.file_obj.close()
+        event.accept()
+
+def main():
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec_())
+
+if __name__ == "__main__":
+    main()
