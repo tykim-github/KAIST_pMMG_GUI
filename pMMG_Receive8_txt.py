@@ -1,4 +1,5 @@
 import serial
+import serial.tools.list_ports
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -6,10 +7,10 @@ import pandas as pd
 # plt.rc('text', usetex=True)
 plt.rc('font', family='serif')
 
-
-
-# 장치 관리자에서 COM포트 번호 확인하기
-serialPort = serial.Serial('COM10', 921600, timeout=1)
+for port in serial.tools.list_ports.comports():
+    if "STMicroelectronics" in port.manufacturer:
+        com_port = port.device
+serialPort = serial.Serial(com_port, 921600, timeout=1)
 
 # 텍스트 파일 열기 (기록할 파일 경로)
 txt_filename = 'dataFile8.txt'
