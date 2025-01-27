@@ -14,7 +14,15 @@ from PyQt5.QtGui import QIcon
 # PyQtGraph
 import pyqtgraph as pg
 
-PROGRAM_VERSION = "1.10"
+# to make this exe
+# pyinstaller --onefile --noconsole --strip --icon=legmus.ico --add-data="files;files" pmmg_receiver_gui_v2.py
+
+#############################################################################
+PROGRAM_VERSION = "1.11"
+# 1.00   Initial release
+# 1.10   USB 연결/해제 모니터링 타이머 추가, 실시간 그래프 최적화(Line객체)
+# 1.11   파일명 자동설정
+#############################################################################
 
 class MainWindow(QMainWindow):
     def __init__(self):
