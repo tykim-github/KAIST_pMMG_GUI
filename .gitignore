@@ -1,0 +1,12 @@
+# Ignore executable files.
+*.exe
+*.txt
+*.png
+*.spec
+*.ico
+*.csv
+*.mp3
+
+# Ignore PyInstaller build directories.
+/build/
+/dist/

@@ -15,7 +15,7 @@ from PyQt5.QtGui import QIcon
 import pyqtgraph as pg
 
 # to make this exe
-# pyinstaller --onefile --noconsole --strip --icon=legmus.ico --add-data="files;files" pmmg_receiver_gui_v2.py
+# pyinstaller --onefile --noconsole --strip pMMG_Receive8_txt.py
 
 #############################################################################
 PROGRAM_VERSION = "1.11"
