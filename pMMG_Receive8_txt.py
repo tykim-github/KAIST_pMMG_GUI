@@ -14,11 +14,7 @@ from PyQt5.QtGui import QIcon
 # PyQtGraph
 import pyqtgraph as pg
 
-####################################################
-PROGRAM_VERSION = "1.01"
-# 1.00   Initial release
-# 1.01   GUI-based software, Real-time plot
-####################################################
+PROGRAM_VERSION = "1.10"
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -30,15 +26,19 @@ class MainWindow(QMainWindow):
         pg.setConfigOptions(
             antialias=False,       # 안티에일리싱 끔 (속도↑)
             useOpenGL=True,        # OpenGL 가속
-            foreground='k',        # 그래프 라벨 색상 (검정)
+            foreground='k',        # 라벨 색상 (검정)
             background='w'         # 배경 흰색
         )
 
         # 시리얼 및 데이터 관련 초기화
         self.serial_port = None
-        self.is_reading = False  # 데이터 수신 중인지 여부
-        self.rx_buffer = ""      # 수신된 문자열을 누적할 버퍼
-        self.max_time_ms = 10000 # 그래프에 표시할 최대 시간(10초)
+        self.is_reading = False          # 데이터 수신 중인지 여부
+        self.rx_buffer = ""              # 누적 수신 버퍼
+        self.max_time_ms = 10000         # 그래프 표시 최대 시간(10초)
+
+        # 파일명 자동 관리용 변수
+        self.lastBaseName = ""           # 이전에 사용한 파일 베이스이름
+        self.lastFileIndex = 0           # 같은 베이스 이름일 때 파일 번호
 
         # 실시간 버퍼(리스트) - 10초 이상은 trimData()로 제거
         self.data_buffer = {
@@ -73,7 +73,7 @@ class MainWindow(QMainWindow):
         self.read_timer.timeout.connect(self.read_data)
 
     def _initUI(self):
-        """GUI를 초기화하는 함수"""
+        """GUI 구성"""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
@@ -131,11 +131,11 @@ class MainWindow(QMainWindow):
 
         right_layout.addWidget(checkbox_group)
 
-        # (2) 파일명 입력 구역
-        file_group = QGroupBox("Output File Name")
+        # (2) 파일명 입력 구역 (확장자 .txt는 자동으로 붙을 예정)
+        file_group = QGroupBox("Output File Name (base)")
         file_layout = QVBoxLayout(file_group)
         self.file_edit = QLineEdit()
-        self.file_edit.setText("dataFile8.txt")  # 기본값
+        self.file_edit.setText("dataFile")  # 예시 기본값
         file_layout.addWidget(self.file_edit)
         right_layout.addWidget(file_group)
 
@@ -154,14 +154,12 @@ class MainWindow(QMainWindow):
         ports = serial.tools.list_ports.comports()
         stm_port = None
         for port in ports:
-            # 제조사 이름에 'STMicroelectronics'가 있으면 사용
             if port.manufacturer and "STMicroelectronics" in port.manufacturer:
                 stm_port = port.device
                 break
 
         if stm_port:
             try:
-                # 921600 baud로 연결
                 self.serial_port = serial.Serial(stm_port, 921600, timeout=0.1)
                 self.label_state.setText("Connected")
                 self.label_state.setStyleSheet("font-weight: bold; color: green;")
@@ -182,15 +180,24 @@ class MainWindow(QMainWindow):
             return
 
         if not self.is_reading:
-            # 파일 열기 시도
-            self.txt_filename = self.file_edit.text().strip()
-            if not self.txt_filename:
-                QMessageBox.warning(self, "Warning", "파일명을 입력하세요.")
+            # --- Start Reading ---
+            base_name = self.file_edit.text().strip()
+            if not base_name:
+                QMessageBox.warning(self, "Warning", "파일 베이스 이름을 입력하세요.")
                 return
 
-            # 파일 열기 (쓰기 모드)
+            # 만약 이전 베이스이름과 다르면 인덱스 리셋
+            if base_name != self.lastBaseName:
+                self.lastBaseName = base_name
+                self.lastFileIndex = 0
+
+            # 파일 인덱스 증가
+            self.lastFileIndex += 1
+            # 파일명은 baseName_XX.txt 형태 (XX는 2자리)
+            filename = f"{self.lastBaseName}_{self.lastFileIndex:02d}.txt"
+
             try:
-                self.file_obj = open(self.txt_filename, mode='w', encoding='utf-8')
+                self.file_obj = open(filename, mode='w', encoding='utf-8')
                 header = ("Time[ms],Pressure1[kPa],Pressure2[kPa],Pressure3[kPa],"
                           "Pressure4[kPa],Pressure5[kPa],Pressure6[kPa],Pressure7[kPa],"
                           "Pressure8[kPa],FSR_L,FSR_R\n")
@@ -199,17 +206,21 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "File Error", str(e))
                 return
 
-            # 수신 시작
+            # 새 측정이므로 데이터 버퍼/그래프 리셋
+            for key in self.data_buffer:
+                self.data_buffer[key].clear()
+
+            # 상태 및 버튼 표시 변경
             self.is_reading = True
             self.label_state.setText("Reading")
             self.label_state.setStyleSheet("font-weight: bold; color: blue;")
             self.btn_start.setText("Stop Reading")
 
-            # 시리얼 리드용 타이머 시작
+            # 시리얼 리드 타이머 시작
             self.read_timer.start()
 
         else:
-            # 수신 정지
+            # --- Stop Reading ---
             self.is_reading = False
             self.label_state.setText("Connected")
             self.label_state.setStyleSheet("font-weight: bold; color: green;")
@@ -219,25 +230,23 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'file_obj'):
                 self.file_obj.close()
 
-            # 리드 타이머 중단
+            # 리드 타이머 정지
             self.read_timer.stop()
 
     def read_data(self):
-        """시리얼 버퍼에 있는 모든 데이터 읽어온 뒤 줄 단위로 파싱"""
+        """시리얼 버퍼에 있는 모든 데이터 읽은 뒤 줄 단위로 파싱"""
         if not self.serial_port or not self.is_reading:
             return
 
-        # 한 번에 버퍼 모두 읽기
         data_bytes = self.serial_port.read_all()
         if not data_bytes:
             return
 
-        # 이전에 파싱 못한 찌꺼기(self.rx_buffer)에 이어붙임
         self.rx_buffer += data_bytes.decode('utf-8', errors='ignore')
 
         # 줄 단위로 분할
         lines = self.rx_buffer.split('\n')
-        # 마지막 줄은 개행 문자가 없을 수 있으므로 버퍼에 보존
+        # 마지막 줄은 완성되지 않았을 수 있으므로 버퍼에 보존
         self.rx_buffer = lines.pop(-1)
 
         for line in lines:
@@ -284,18 +293,16 @@ class MainWindow(QMainWindow):
                     self._trimData(time_val)
 
                 except ValueError:
-                    # 데이터 중간에 이상값 있으면 스킵
                     print(f"Value Error in parsing line: {line}")
             else:
                 print(f"Incomplete data: {line}")
 
     def _trimData(self, current_time_ms):
-        """현재 시간이 10초(10000ms)를 넘으면 앞부분 데이터를 버림"""
+        """현재 시간이 max_time_ms(기본 10초)를 넘으면 앞부분 데이터를 버림"""
         threshold = current_time_ms - self.max_time_ms
         if threshold < 0:
             return
 
-        # Time 리스트 기준으로 잘라낼 인덱스 계산
         time_list = self.data_buffer['Time']
         keep_index = 0
         for i, t in enumerate(time_list):
@@ -308,7 +315,7 @@ class MainWindow(QMainWindow):
                 self.data_buffer[key] = self.data_buffer[key][keep_index:]
 
     def update_plot(self):
-        """30ms마다 그래프 갱신"""
+        """50ms마다 그래프 갱신"""
         if not self.data_buffer['Time']:
             return
 
@@ -323,9 +330,8 @@ class MainWindow(QMainWindow):
         for key in self.curves:
             if self.checkbox_list[key].isChecked():
                 y_vals = np.array(self.data_buffer[key], dtype=float)
-                # downsample 파라미터는 필요 시 조절 (예: downsample=5 등)
-                self.curves[key].setData(time_vals, y_vals,
-                                         skipFiniteCheck=True)
+                # downsample 제거, skipFiniteCheck만 True로 속도 최적화
+                self.curves[key].setData(time_vals, y_vals, skipFiniteCheck=True)
             else:
                 self.curves[key].setData([], [])
 
