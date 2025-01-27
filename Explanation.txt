@@ -1,0 +1,10 @@
+[Repository] : KAIST_pMMG_FW
+[Branch] : feature/General/_UART_to_AM
+
+- pMMG_Receive8_csv.py : csv파일로 데이터 저장(5ms 가능) -> csv파일은 1,048,576개의 행까지 사용 가능
+- pMMG_Receive8_txt.py : txt파일로 데이터 저장(5ms 가능)
+
+
+# 만약 데이터 저장되는 csv/txt 파일이 생기지 않는다면, VSCode에서 현재 작업 폴더가 열려있는지 확인 
+# 각각 시계열 데이터는 "dataFile8.csv" / "dataFile8.txt"로 저장됨
+# 결과 그래프는 "pMMG_result8.png"로 저장됨
